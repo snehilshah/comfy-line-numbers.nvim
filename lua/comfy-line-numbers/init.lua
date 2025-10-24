@@ -94,7 +94,8 @@ local M = {
     up_key = 'k',
     down_key = 'j',
     hidden_file_types = { 'undotree' },
-    hidden_buffer_types = { 'terminal', 'nofile' }
+    hidden_buffer_types = { 'terminal', 'nofile' },
+    hide_insert_mode = false
   }
 }
 
@@ -106,6 +107,10 @@ end
 -- Defined on the global namespace to be used in Vimscript below.
 _G.get_label = function(absnum, relnum)
   if not enabled then
+    return absnum
+  end
+
+  if M.config.hide_in_insert_mode and vim.fn.mode() == 'i' then
     return absnum
   end
 
@@ -171,7 +176,7 @@ end
 function create_auto_commands()
   local group = vim.api.nvim_create_augroup("ComfyLineNumbers", { clear = true })
 
-  vim.api.nvim_create_autocmd({ "WinNew", "BufWinEnter", "BufEnter", "TermOpen" }, {
+  vim.api.nvim_create_autocmd({ "WinNew", "BufWinEnter", "BufEnter", "TermOpen", "InsertEnter", "InsertLeave" }, {
     group = group,
     pattern = "*",
     callback = update_status_column
