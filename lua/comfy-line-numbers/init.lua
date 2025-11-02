@@ -109,6 +109,17 @@ _G.get_label = function(absnum, relnum)
     return absnum
   end
 
+  -- Check if we're in insert mode or if relativenumber is disabled
+  local mode = vim.api.nvim_get_mode().mode
+  local is_insert_mode = mode == 'i' or mode == 'ic' or mode == 'ix'
+  local has_relativenumber = vim.wo.relativenumber
+
+  if is_insert_mode or not has_relativenumber then
+    -- In insert mode or when relativenumber is off, show absolute line numbers only
+    return string.format("%-2d", absnum)
+  end
+
+  -- In normal mode with relativenumber, show custom labels
   if relnum == 0 then
     -- Pad current line number to match width
     return string.format("%-2d", vim.fn.line ".")
@@ -116,7 +127,7 @@ _G.get_label = function(absnum, relnum)
     -- Pad label to consistent width
     return string.format("%-2s", M.config.labels[relnum])
   else
-    -- Pad absolute number to consistent width
+    -- For lines beyond label range, show absolute number
     return string.format("%-2d", absnum)
   end
 end
@@ -138,6 +149,9 @@ function update_status_column()
     end
   end
 end
+
+-- Expose to global namespace for numbertoggle.lua
+_G.update_status_column = update_status_column
 
 function M.enable_line_numbers()
   if enabled then
@@ -175,6 +189,29 @@ function create_auto_commands()
     group = group,
     pattern = "*",
     callback = update_status_column
+  })
+
+  -- Update statuscolumn when switching modes
+  vim.api.nvim_create_autocmd({ "ModeChanged" }, {
+    group = group,
+    pattern = "*",
+    callback = function()
+      -- Use schedule to ensure mode and relativenumber state have updated
+      vim.schedule(function()
+        vim.cmd "redraw"
+      end)
+    end
+  })
+
+  -- Also update on InsertEnter/InsertLeave for reliability
+  vim.api.nvim_create_autocmd({ "InsertEnter", "InsertLeave" }, {
+    group = group,
+    pattern = "*",
+    callback = function()
+      vim.schedule(function()
+        vim.cmd "redraw"
+      end)
+    end
   })
 end
 
