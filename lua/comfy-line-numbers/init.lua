@@ -204,6 +204,29 @@ function create_auto_commands()
     pattern = "*",
     callback = update_status_column
   })
+
+  -- Update statuscolumn when switching modes
+  vim.api.nvim_create_autocmd({ "ModeChanged" }, {
+    group = group,
+    pattern = "*",
+    callback = function()
+      -- Use schedule to ensure mode and relativenumber state have updated
+      vim.schedule(function()
+        vim.cmd "redraw"
+      end)
+    end
+  })
+
+  -- Also update on InsertEnter/InsertLeave for reliability
+  vim.api.nvim_create_autocmd({ "InsertEnter", "InsertLeave" }, {
+    group = group,
+    pattern = "*",
+    callback = function()
+      vim.schedule(function()
+        vim.cmd "redraw"
+      end)
+    end
+  })
 end
 
 function M.setup(config)
