@@ -117,6 +117,17 @@ _G.get_label = function(absnum, relnum)
     return string.format("%" .. width .. "d", absnum)
   end
 
+  -- Check if we're in insert mode or if relativenumber is disabled
+  local mode = vim.api.nvim_get_mode().mode
+  local is_insert_mode = mode == 'i' or mode == 'ic' or mode == 'ix'
+  local has_relativenumber = vim.wo.relativenumber
+
+  if is_insert_mode or not has_relativenumber then
+    -- In insert mode or when relativenumber is off, show absolute line numbers only
+    return string.format("%-2d", absnum)
+  end
+
+  -- In normal mode with relativenumber, show custom labels
   if relnum == 0 then
     -- Pad current line number to match width
     return string.format("%" .. width .. "d", vim.fn.line ".")
@@ -124,7 +135,7 @@ _G.get_label = function(absnum, relnum)
     -- Pad label to consistent width
     return string.format("%" .. width .. "s", M.config.labels[relnum])
   else
-    -- Pad absolute number to consistent width
+    -- For lines beyond label range, show absolute number
     return string.format("%" .. width .. "d", absnum)
   end
 end
@@ -147,11 +158,14 @@ function update_status_column()
         local width = math.max(4, #tostring(total_lines))
         vim.wo[win].numberwidth = width
 
-        vim.opt.statuscolumn = '%=%s%=%{v:virtnum > 0 ? "" : v:lua.get_label(v:lnum, v:relnum)} '
+        vim.opt.statuscolumn = '%s%=%{v:virtnum > 0 ? "" : v:lua.get_label(v:lnum, v:relnum)} '
       end)
     end
   end
 end
+
+-- Expose to global namespace for numbertoggle.lua
+_G.update_status_column = update_status_column
 
 function M.enable_line_numbers()
   if enabled then
