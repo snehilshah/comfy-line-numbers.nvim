@@ -94,13 +94,25 @@ local M = {
     up_key = 'k',
     down_key = 'j',
     hidden_file_types = { 'undotree' },
-    hidden_buffer_types = { 'terminal', 'nofile' }
+    hidden_buffer_types = { 'terminal', 'nofile' },
+    hide_in_insert_mode = false,
   }
 }
 
+local function is_insert_mode()
+  local mode = vim.api.nvim_get_mode().mode
+  return mode == 'i' or mode == 'ic' or mode == 'ix'
+end
+
 local should_hide_numbers = function(filetype, buftype)
-  return vim.tbl_contains(M.config.hidden_file_types, filetype) or
-      vim.tbl_contains(M.config.hidden_buffer_types, buftype)
+  if vim.tbl_contains(M.config.hidden_file_types, filetype)
+      or vim.tbl_contains(M.config.hidden_buffer_types, buftype) then
+    return true
+  end
+  if M.config.hide_in_insert_mode and is_insert_mode() then
+    return true
+  end
+  return false
 end
 
 -- Defined on the global namespace to be used in Vimscript below.
@@ -117,12 +129,7 @@ _G.get_label = function(absnum, relnum)
     return string.format("%" .. width .. "d", absnum)
   end
 
-  -- Check if we're in insert mode or if relativenumber is disabled
-  local mode = vim.api.nvim_get_mode().mode
-  local is_insert_mode = mode == 'i' or mode == 'ic' or mode == 'ix'
-  local has_relativenumber = vim.wo.relativenumber
-
-  if is_insert_mode or not has_relativenumber then
+  if is_insert_mode() or not vim.wo.relativenumber then
     -- In insert mode or when relativenumber is off, show absolute line numbers only
     return string.format("%-2d", absnum)
   end
@@ -140,7 +147,7 @@ _G.get_label = function(absnum, relnum)
   end
 end
 
-function update_status_column()
+local function update_status_column()
   for _, win in ipairs(vim.api.nvim_list_wins()) do
     local buf = vim.api.nvim_win_get_buf(win)
     local buftype = vim.bo[buf].buftype
@@ -196,7 +203,7 @@ function M.disable_line_numbers()
   update_status_column()
 end
 
-function create_auto_commands()
+local function create_auto_commands()
   local group = vim.api.nvim_create_augroup("ComfyLineNumbers", { clear = true })
 
   vim.api.nvim_create_autocmd({ "WinNew", "BufWinEnter", "BufEnter", "TermOpen", "InsertEnter", "InsertLeave", "FileType" }, {
