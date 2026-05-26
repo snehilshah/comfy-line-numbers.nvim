@@ -1,7 +1,10 @@
--- this runs when the plugin in required
--- this will only run once as the module will be cached
--- clear the cache with the following command
--- `:lua package.loaded['plugin-template'] = nil`
+-- comfy-line-numbers: home-row labels for relative line numbers.
+-- Stability notes:
+--   * statuscolumn is set per window (vim.wo[win]) so other plugins / windows
+--     can keep their own statuscolumn without being clobbered.
+--   * a single augroup owns all autocmds; updates are debounced through a
+--     single uv timer to avoid redraw storms on cursor/insert events.
+--   * keymaps are guarded so enable/disable are idempotent.
 
 local enabled = false
 
