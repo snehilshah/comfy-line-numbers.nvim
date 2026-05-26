@@ -99,15 +99,28 @@ local M = {
     hidden_file_types = { 'undotree' },
     hidden_buffer_types = { 'terminal', 'nofile' },
     hide_in_insert_mode = false,
-  }
+    right_padding = 1,
+  },
 }
+
+-- Marker token written into statuscolumn so we can recognize windows we own.
+-- Layout: fold column (%C), signs (%s), then right-aligned line label.
+-- Baking %C into the template avoids race conditions with external prepend
+-- autocmds that would otherwise stack arrows on every event.
+-- Trailing space matches the original GitHub template (small gap between
+-- the label and buffer text).
+local OUR_STATUSCOL = '%C%s%=%{v:virtnum > 0 ? "" : v:lua.get_label(v:lnum, v:relnum)} '
+
+-- Debounce timer for redraws/statuscolumn updates.
+local _redraw_timer
+local _update_timer
 
 local function is_insert_mode()
   local mode = vim.api.nvim_get_mode().mode
   return mode == 'i' or mode == 'ic' or mode == 'ix'
 end
 
-local should_hide_numbers = function(filetype, buftype)
+local function should_hide_numbers(filetype, buftype)
   if vim.tbl_contains(M.config.hidden_file_types, filetype)
       or vim.tbl_contains(M.config.hidden_buffer_types, buftype) then
     return true
@@ -118,63 +131,107 @@ local should_hide_numbers = function(filetype, buftype)
   return false
 end
 
--- Defined on the global namespace to be used in Vimscript below.
+-- Defined on the global namespace to be used in the statuscolumn template.
 _G.get_label = function(absnum, relnum)
   if not enabled then
     return absnum
   end
 
-  -- Use numberwidth for consistent padding (set in update_status_column)
-  local width = vim.wo.numberwidth
-
-  -- Check if relativenumber is enabled (respects nvim-numbertoggle)
-  if not vim.wo.relativenumber then
-    return string.format("%" .. width .. "d", absnum)
-  end
-
+  -- All branches use a 2-char left-aligned format. Short values get a trailing
+  -- space, longer ones (e.g. 3-char labels "155") render at natural width.
+  -- This matches the original gutter width before the numberwidth refactor.
   if is_insert_mode() or not vim.wo.relativenumber then
-    -- In insert mode or when relativenumber is off, show absolute line numbers only
-    return string.format("%-2d", absnum)
+    return string.format('%-2d', absnum)
   end
 
-  -- In normal mode with relativenumber, show custom labels
   if relnum == 0 then
-    -- Pad current line number to match width
-    return string.format("%" .. width .. "d", vim.fn.line ".")
+    return string.format('%-2d', vim.fn.line('.'))
   elseif relnum > 0 and relnum <= #M.config.labels then
-    -- Pad label to consistent width
-    return string.format("%" .. width .. "s", M.config.labels[relnum])
+    return string.format('%-2s', M.config.labels[relnum])
   else
-    -- For lines beyond label range, show absolute number
-    return string.format("%" .. width .. "d", absnum)
+    return string.format('%-2d', absnum)
   end
+end
+
+--- Apply or clear the comfy statuscolumn on a single window.
+--- @param win number window handle
+local function apply_window(win)
+  if not vim.api.nvim_win_is_valid(win) then
+    return
+  end
+
+  local buf = vim.api.nvim_win_get_buf(win)
+  if not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+
+  local buftype = vim.bo[buf].buftype
+  local filetype = vim.bo[buf].filetype
+
+  if should_hide_numbers(filetype, buftype) then
+    -- Only clear if WE set this window's statuscolumn (avoid stomping other plugins).
+    if vim.wo[win].statuscolumn == OUR_STATUSCOL or vim.wo[win].statuscolumn:find('v:lua%.get_label', 1) then
+      vim.wo[win].statuscolumn = ''
+    end
+    return
+  end
+
+  -- Don't override numberwidth: inherit global (typically 1). The label
+  -- function below produces naturally-padded strings, and statuscolumn auto-
+  -- sizes to the rendered content. Forcing a min width here added wasted
+  -- space on the left of the gutter without any benefit.
+  vim.wo[win].statuscolumn = OUR_STATUSCOL
 end
 
 local function update_status_column()
   for _, win in ipairs(vim.api.nvim_list_wins()) do
-    local buf = vim.api.nvim_win_get_buf(win)
-    local buftype = vim.bo[buf].buftype
-    local filetype = vim.bo[buf].filetype
-
-    if should_hide_numbers(filetype, buftype) then
-      vim.api.nvim_win_call(win, function()
-        vim.opt.statuscolumn = ''
-      end)
-    else
-      vim.api.nvim_win_call(win, function()
-        -- Calculate and set consistent width based on total lines
-        -- Minimum 4 to fit longest custom labels (e.g., "1444")
-        local total_lines = vim.api.nvim_buf_line_count(buf)
-        local width = math.max(4, #tostring(total_lines))
-        vim.wo[win].numberwidth = width
-
-        vim.opt.statuscolumn = '%s%=%{v:virtnum > 0 ? "" : v:lua.get_label(v:lnum, v:relnum)} '
-      end)
-    end
+    apply_window(win)
   end
 end
 
--- Expose to global namespace for numbertoggle.lua
+local function schedule_update()
+  if _update_timer then
+    _update_timer:stop()
+    _update_timer:close()
+    _update_timer = nil
+  end
+  _update_timer = vim.uv.new_timer()
+  if not _update_timer then
+    update_status_column()
+    return
+  end
+  _update_timer:start(20, 0, vim.schedule_wrap(function()
+    if _update_timer then
+      _update_timer:stop()
+      _update_timer:close()
+      _update_timer = nil
+    end
+    update_status_column()
+  end))
+end
+
+local function schedule_redraw()
+  if _redraw_timer then
+    _redraw_timer:stop()
+    _redraw_timer:close()
+    _redraw_timer = nil
+  end
+  _redraw_timer = vim.uv.new_timer()
+  if not _redraw_timer then
+    vim.cmd('redraw')
+    return
+  end
+  _redraw_timer:start(30, 0, vim.schedule_wrap(function()
+    if _redraw_timer then
+      _redraw_timer:stop()
+      _redraw_timer:close()
+      _redraw_timer = nil
+    end
+    pcall(vim.cmd, 'redraw')
+  end))
+end
+
+-- Expose for numbertoggle.lua
 _G.update_status_column = update_status_column
 
 function M.enable_line_numbers()
