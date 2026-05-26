@@ -240,8 +240,9 @@ function M.enable_line_numbers()
   end
 
   for index, label in ipairs(M.config.labels) do
-    vim.keymap.set({ 'n', 'v', 'o' }, label .. M.config.up_key, index .. 'k', { noremap = true })
-    vim.keymap.set({ 'n', 'v', 'o' }, label .. M.config.down_key, index .. 'j', { noremap = true })
+    -- pcall: tolerate the unlikely case that a previous instance left bindings around
+    pcall(vim.keymap.set, { 'n', 'v', 'o' }, label .. M.config.up_key, index .. 'k', { noremap = true })
+    pcall(vim.keymap.set, { 'n', 'v', 'o' }, label .. M.config.down_key, index .. 'j', { noremap = true })
   end
 
   enabled = true
