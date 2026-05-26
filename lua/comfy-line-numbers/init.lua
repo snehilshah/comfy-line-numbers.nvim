@@ -254,67 +254,67 @@ function M.disable_line_numbers()
     return
   end
 
-  for index, label in ipairs(M.config.labels) do
-    vim.keymap.del({ 'n', 'v', 'o' }, label .. M.config.up_key)
-    vim.keymap.del({ 'n', 'v', 'o' }, label .. M.config.down_key)
+  for _, label in ipairs(M.config.labels) do
+    pcall(vim.keymap.del, { 'n', 'v', 'o' }, label .. M.config.up_key)
+    pcall(vim.keymap.del, { 'n', 'v', 'o' }, label .. M.config.down_key)
   end
-
 
   enabled = false
   update_status_column()
 end
 
 local function create_auto_commands()
-  local group = vim.api.nvim_create_augroup("ComfyLineNumbers", { clear = true })
+  local group = vim.api.nvim_create_augroup('ComfyLineNumbers', { clear = true })
 
-  vim.api.nvim_create_autocmd({ "WinNew", "BufWinEnter", "BufEnter", "TermOpen", "InsertEnter", "InsertLeave", "FileType" }, {
+  vim.api.nvim_create_autocmd(
+    { 'WinNew', 'BufWinEnter', 'BufEnter', 'TermOpen', 'FileType' },
+    {
+      group = group,
+      pattern = '*',
+      callback = schedule_update,
+    }
+  )
+
+  vim.api.nvim_create_autocmd({ 'InsertEnter', 'InsertLeave', 'ModeChanged' }, {
     group = group,
-    pattern = "*",
-    callback = update_status_column
+    pattern = '*',
+    callback = function()
+      if M.config.hide_in_insert_mode then
+        -- statuscolumn template includes mode-aware branches, but force a redraw
+        -- so the screen reflects the new mode immediately.
+        schedule_redraw()
+      end
+    end,
   })
 
-  -- Update statuscolumn when switching modes
-  vim.api.nvim_create_autocmd({ "ModeChanged" }, {
+  vim.api.nvim_create_autocmd({ 'VimResized' }, {
     group = group,
-    pattern = "*",
-    callback = function()
-      -- Use schedule to ensure mode and relativenumber state have updated
-      vim.schedule(function()
-        vim.cmd "redraw"
-      end)
-    end
-  })
-
-  -- Also update on InsertEnter/InsertLeave for reliability
-  vim.api.nvim_create_autocmd({ "InsertEnter", "InsertLeave" }, {
-    group = group,
-    pattern = "*",
-    callback = function()
-      vim.schedule(function()
-        vim.cmd "redraw"
-      end)
-    end
+    pattern = '*',
+    callback = schedule_update,
   })
 end
 
 function M.setup(config)
-  M.config = vim.tbl_deep_extend("force", M.config, config or {})
+  M.config = vim.tbl_deep_extend('force', M.config, config or {})
+
+  local padding = string.rep(' ', M.config.right_padding or 1)
+  OUR_STATUSCOL = '%C%s%=%{v:virtnum > 0 ? "" : v:lua.get_label(v:lnum, v:relnum)}' .. padding
 
   vim.api.nvim_create_user_command(
     'ComfyLineNumbers',
     function(args)
-      if args.args == "enable" then
+      if args.args == 'enable' then
         M.enable_line_numbers()
-      elseif args.args == "disable" then
+      elseif args.args == 'disable' then
         M.disable_line_numbers()
-      elseif args.args == "toggle" then
+      elseif args.args == 'toggle' then
         if enabled then
           M.disable_line_numbers()
         else
           M.enable_line_numbers()
         end
       else
-        print("Invalid argument.")
+        vim.notify('ComfyLineNumbers: expected enable|disable|toggle', vim.log.levels.WARN)
       end
     end,
     { nargs = 1 }
