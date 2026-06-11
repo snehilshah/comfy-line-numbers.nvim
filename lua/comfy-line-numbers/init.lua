@@ -2,8 +2,9 @@
 -- Stability notes:
 --   * statuscolumn is set per window (vim.wo[win]) so other plugins / windows
 --     can keep their own statuscolumn without being clobbered.
---   * a single augroup owns all autocmds; updates are debounced through a
---     single uv timer to avoid redraw storms on cursor/insert events.
+--   * statuscolumn expressions are cached per line; Neovim only re-evaluates
+--     lines it redraws. Anything mode-dependent (insert vs normal rendering)
+--     therefore needs an explicit full statuscolumn redraw on mode change.
 --   * keymaps are guarded so enable/disable are idempotent.
 
 local enabled = false
@@ -111,24 +112,17 @@ local M = {
 -- the label and buffer text).
 local OUR_STATUSCOL = '%C%s%=%{v:virtnum > 0 ? "" : v:lua.get_label(v:lnum, v:relnum)} '
 
--- Debounce timer for redraws/statuscolumn updates.
-local _redraw_timer
-local _update_timer
-
 local function is_insert_mode()
+  -- Replace modes ('R', 'Rc', ...) behave like insert for our purposes;
+  -- InsertEnter/InsertLeave fire for them too.
   local mode = vim.api.nvim_get_mode().mode
-  return mode == 'i' or mode == 'ic' or mode == 'ix'
+  local first = mode:sub(1, 1)
+  return first == 'i' or first == 'R'
 end
 
 local function should_hide_numbers(filetype, buftype)
-  if vim.tbl_contains(M.config.hidden_file_types, filetype)
-      or vim.tbl_contains(M.config.hidden_buffer_types, buftype) then
-    return true
-  end
-  if M.config.hide_in_insert_mode and is_insert_mode() then
-    return true
-  end
-  return false
+  return vim.tbl_contains(M.config.hidden_file_types, filetype)
+      or vim.tbl_contains(M.config.hidden_buffer_types, buftype)
 end
 
 -- Defined on the global namespace to be used in the statuscolumn template.
@@ -139,13 +133,20 @@ _G.get_label = function(absnum, relnum)
 
   -- All branches use a 2-char left-aligned format. Short values get a trailing
   -- space, longer ones (e.g. 3-char labels "155") render at natural width.
-  -- This matches the original gutter width before the numberwidth refactor.
-  if is_insert_mode() or not vim.wo.relativenumber then
+  if is_insert_mode() then
+    if M.config.hide_in_insert_mode then
+      return ''
+    end
+    return string.format('%-2d', absnum)
+  end
+
+  if not vim.wo.relativenumber then
     return string.format('%-2d', absnum)
   end
 
   if relnum == 0 then
-    return string.format('%-2d', vim.fn.line('.'))
+    -- relnum 0 is the cursor line, so absnum is the cursor line number.
+    return string.format('%-2d', absnum)
   elseif relnum > 0 and relnum <= #M.config.labels then
     return string.format('%-2s', M.config.labels[relnum])
   else
@@ -168,7 +169,7 @@ local function apply_window(win)
   local buftype = vim.bo[buf].buftype
   local filetype = vim.bo[buf].filetype
 
-  if should_hide_numbers(filetype, buftype) then
+  if not enabled or should_hide_numbers(filetype, buftype) then
     -- Only clear if WE set this window's statuscolumn (avoid stomping other plugins).
     if vim.wo[win].statuscolumn == OUR_STATUSCOL or vim.wo[win].statuscolumn:find('v:lua%.get_label', 1) then
       vim.wo[win].statuscolumn = ''
@@ -178,9 +179,11 @@ local function apply_window(win)
 
   -- Don't override numberwidth: inherit global (typically 1). The label
   -- function below produces naturally-padded strings, and statuscolumn auto-
-  -- sizes to the rendered content. Forcing a min width here added wasted
-  -- space on the left of the gutter without any benefit.
-  vim.wo[win].statuscolumn = OUR_STATUSCOL
+  -- sizes to the rendered content. Guard the assignment so repeated autocmd
+  -- fires don't trigger redundant option-set redraws.
+  if vim.wo[win].statuscolumn ~= OUR_STATUSCOL then
+    vim.wo[win].statuscolumn = OUR_STATUSCOL
+  end
 end
 
 local function update_status_column()
@@ -189,50 +192,16 @@ local function update_status_column()
   end
 end
 
-local function schedule_update()
-  if _update_timer then
-    _update_timer:stop()
-    _update_timer:close()
-    _update_timer = nil
+-- Force every visible line's statuscolumn to be re-evaluated. Required after
+-- mode changes: the rendered label depends on the mode, but Neovim caches
+-- statuscolumn output per line and only re-evaluates redrawn lines.
+local function redraw_status_columns()
+  if vim.api.nvim__redraw then
+    pcall(vim.api.nvim__redraw, { statuscolumn = true })
+  else
+    vim.cmd('redraw!')
   end
-  _update_timer = vim.uv.new_timer()
-  if not _update_timer then
-    update_status_column()
-    return
-  end
-  _update_timer:start(20, 0, vim.schedule_wrap(function()
-    if _update_timer then
-      _update_timer:stop()
-      _update_timer:close()
-      _update_timer = nil
-    end
-    update_status_column()
-  end))
 end
-
-local function schedule_redraw()
-  if _redraw_timer then
-    _redraw_timer:stop()
-    _redraw_timer:close()
-    _redraw_timer = nil
-  end
-  _redraw_timer = vim.uv.new_timer()
-  if not _redraw_timer then
-    vim.cmd('redraw')
-    return
-  end
-  _redraw_timer:start(30, 0, vim.schedule_wrap(function()
-    if _redraw_timer then
-      _redraw_timer:stop()
-      _redraw_timer:close()
-      _redraw_timer = nil
-    end
-    pcall(vim.cmd, 'redraw')
-  end))
-end
-
--- Expose for numbertoggle.lua
-_G.update_status_column = update_status_column
 
 function M.enable_line_numbers()
   if enabled then
@@ -247,6 +216,7 @@ function M.enable_line_numbers()
 
   enabled = true
   update_status_column()
+  redraw_status_columns()
 end
 
 function M.disable_line_numbers()
@@ -261,36 +231,28 @@ function M.disable_line_numbers()
 
   enabled = false
   update_status_column()
+  redraw_status_columns()
 end
 
 local function create_auto_commands()
   local group = vim.api.nvim_create_augroup('ComfyLineNumbers', { clear = true })
 
   vim.api.nvim_create_autocmd(
-    { 'WinNew', 'BufWinEnter', 'BufEnter', 'TermOpen', 'FileType' },
+    { 'WinNew', 'BufWinEnter', 'TermOpen', 'FileType' },
     {
       group = group,
       pattern = '*',
-      callback = schedule_update,
+      callback = update_status_column,
     }
   )
 
-  vim.api.nvim_create_autocmd({ 'InsertEnter', 'InsertLeave', 'ModeChanged' }, {
+  -- InsertEnter/InsertLeave also fire for Replace mode. The label function is
+  -- mode-aware, so every visible line must be re-evaluated, not just the ones
+  -- the mode change happens to redraw.
+  vim.api.nvim_create_autocmd({ 'InsertEnter', 'InsertLeave' }, {
     group = group,
     pattern = '*',
-    callback = function()
-      if M.config.hide_in_insert_mode then
-        -- statuscolumn template includes mode-aware branches, but force a redraw
-        -- so the screen reflects the new mode immediately.
-        schedule_redraw()
-      end
-    end,
-  })
-
-  vim.api.nvim_create_autocmd({ 'VimResized' }, {
-    group = group,
-    pattern = '*',
-    callback = schedule_update,
+    callback = redraw_status_columns,
   })
 end
 
