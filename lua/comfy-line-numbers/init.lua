@@ -112,12 +112,15 @@ local M = {
 -- the label and buffer text).
 local OUR_STATUSCOL = '%C%s%=%{v:virtnum > 0 ? "" : v:lua.get_label(v:lnum, v:relnum)} '
 
+-- Insert state is tracked with our own flag instead of nvim_get_mode():
+-- InsertEnter fires BEFORE the mode actually switches (nvim_get_mode() still
+-- reports 'n' inside the autocmd), so a redraw at that point would re-cache
+-- normal-mode labels and leave them stale for the whole insert session.
+-- Replace modes ('R', 'Rc', ...) count as insert for our purposes.
+local in_insert = false
+
 local function is_insert_mode()
-  -- Replace modes ('R', 'Rc', ...) behave like insert for our purposes;
-  -- InsertEnter/InsertLeave fire for them too.
-  local mode = vim.api.nvim_get_mode().mode
-  local first = mode:sub(1, 1)
-  return first == 'i' or first == 'R'
+  return in_insert
 end
 
 local function should_hide_numbers(filetype, buftype)
@@ -246,13 +249,36 @@ local function create_auto_commands()
     }
   )
 
-  -- InsertEnter/InsertLeave also fire for Replace mode. The label function is
-  -- mode-aware, so every visible line must be re-evaluated, not just the ones
-  -- the mode change happens to redraw.
-  vim.api.nvim_create_autocmd({ 'InsertEnter', 'InsertLeave' }, {
+  -- The label function is mode-aware, so on every insert<->normal transition
+  -- every visible line must be re-evaluated, not just the ones the mode
+  -- change happens to redraw.
+  local function set_insert(value)
+    if in_insert ~= value then
+      in_insert = value
+      redraw_status_columns()
+    end
+  end
+
+  -- InsertEnter/InsertLeave also fire for Replace mode.
+  vim.api.nvim_create_autocmd('InsertEnter', {
     group = group,
     pattern = '*',
-    callback = redraw_status_columns,
+    callback = function() set_insert(true) end,
+  })
+  vim.api.nvim_create_autocmd('InsertLeave', {
+    group = group,
+    pattern = '*',
+    callback = function() set_insert(false) end,
+  })
+  -- Catch-all: InsertLeave does NOT fire when insert is left via Ctrl-C.
+  -- ModeChanged fires after the switch, so the real mode is trustworthy here.
+  vim.api.nvim_create_autocmd('ModeChanged', {
+    group = group,
+    pattern = '*',
+    callback = function()
+      local first = vim.api.nvim_get_mode().mode:sub(1, 1)
+      set_insert(first == 'i' or first == 'R')
+    end,
   })
 end
 
